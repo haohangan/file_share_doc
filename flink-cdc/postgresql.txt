@@ -1,0 +1,97 @@
+PostgreSQL WAL
+PostgreSQL Replication Slot
+
+1. 需要讲清楚这一套概念，如何结构化的理解它们？
+2. 安装postgresql
+https://www.postgresql.org/download/linux/debian/
+> sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+> apt-get install gnupg1
+> wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc |  apt-key add -
+> apt-get update
+> apt-get -y install postgresql
+> host    all             all             0.0.0.0/0               md5
+
+2. 权限授予
+> 创建用户
+createuser guihaodb
+> 创建db
+createdb source_business_db
+> 授权
+grant all privileges on database source_business_db to guihaodb;
+>修改密码
+ALTER USER guihaodb WITH PASSWORD 'guihaodb';
+ALTER USER postgres WITH PASSWORD 'postgres';
+
+https://www.netiq.com/zh-cn/documentation/identity-manager-47/setup_windows/data/t45hh4xhskw6.html
+https://juejin.cn/post/7099244291158966280
+# 更改wal日志方式为logical
+wal_level = logical            # minimal, replica, or logical
+# 更改solts最大数量（默认值为10），flink-cdc默认一张表占用一个
+slotsmax_replication_slots = 20           # max number of replication slots
+# 更改wal发送最大进程数（默认值为10），这个值和上面的solts设置一样
+max_wal_senders = 20    # max number of walsender processes
+# 中断那些停止活动超过指定毫秒数的复制连接，可以适当设置大一点（默认60s）
+wal_sender_timeout = 180s	# in milliseconds; 0 disable
+
+4. flink启动
+> flink-cdc
+
+https://github.com/ververica/flink-cdc-connectors/releases/tag/release-2.3.0
+https://github.com/ververica/flink-cdc-connectors/blob/master/docs/content/connectors/postgres-cdc.md
+
+CREATE TABLE source_cdc_test (
+  id INT,
+  log_content STRING,
+  gmt_create timestamp,
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'postgres-cdc',
+  'hostname' = '192.168.3.12',
+  'port' = '5432',
+  'username' = 'postgres',
+  'password' = 'postgres',
+  'database-name' = 'postgres',
+  'schema-name' = 'public',
+  'table-name' = 'acc_back_log',
+  'decoding.plugin.name'='pgoutput'
+);
+http://www.postgres.cn/docs/10/sql-createpublication.html
+> 报错 
+> [ERROR] Could not execute SQL statement. Reason:
+org.postgresql.util.PSQLException: 错误: 逻辑解码要求wal_level >= logical
+
+配置文件 /etc/postgresql/12/main
+> journalctl -xe
+> 报错 invalid line 1 in /etc/postgresql/12/main/postgresql.conf:
+
+
+
+-- Flink SQL> select * from source_cdc_test;
+[ERROR] Could not execute SQL statement. Reason:
+org.postgresql.util.PSQLException: 错误: 无法访问文件 "decoderbufs": 没有那个文件或目录
+> 解决方案：https://github.com/debezium/postgres-decoderbufs
+--   'decoding.plugin.name'='pgoutput'
+
+https://nightlies.apache.org/flink/flink-docs-master/zh/docs/dev/table/sqlclient/
+
+-- flink-connector-jdbc jar包放入flink的lib目录下
+-- 目标表，使用jdbc
+CREATE TABLE dest_cdc_test (
+   id INT,
+  log_content STRING,
+  gmt_create timestamp,
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'jdbc',
+  'url' = 'jdbc:postgresql://192.168.3.12:5432/postgres?currentSchema=public&reWriteBatchedInserts=true',
+  'table-name' = 'acc_back_log_dest',
+  'username' = 'postgres',
+  'password' = 'postgres',
+  
+  'sink.buffer-flush.max-rows' = '5000',
+  'sink.buffer-flush.interval' = '2s', 
+  'sink.max-retries' = '3'
+);
+
+-- 提交任务，可以在控制台看得到运行状态
+-- INSERT INTO dest_cdc_test SELECT * from source_cdc_test;
